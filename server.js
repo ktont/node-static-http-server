@@ -1,87 +1,125 @@
-/*
-NodeJS Static Http Server - http://github.com/thedigitalself/node-static-http-server/
-By James Wanga - The Digital Self
-Licensed under a Creative Commons Attribution 3.0 Unported License.
+const http = require("http");
+const url = require("url");
+const path = require("path");
+const fs = require("fs");
+const port = process.argv[2] || 8888;
 
-A simple, nodeJS, http development server that trivializes serving static files.
+const mimeTypes = {
+  "htm": "text/html",
+  "html": "text/html",
+  "jpeg": "image/jpeg",
+  "jpg": "image/jpeg",
+  "png": "image/png",
+  "gif": "image/gif",
+  "js": "text/javascript",
+  "map": "text/javascript",
+  "css": "text/css",
+};
 
-This server is HEAVILY based on work done by Ryan Florence(https://github.com/rpflorence) (https://gist.github.com/701407). I merged this code with suggestions on handling varied MIME types found at Stackoverflow (http://stackoverflow.com/questions/7268033/basic-static-file-server-in-nodejs).
+const virtualDirectories = {
+  //"images": "../images/"
+};
 
-To run the server simply place the server.js file in the root of your web application and issue the command 
-$ node server.js 
-or 
-$ node server.js 1234 
-with "1234" being a custom port number"
+const rootWWW = __dirname/* + '/../assets'*/;
 
-Your web application will be served at http://localhost:8888 by default or http://localhost:1234 with "1234" being the custom port you passed.
+function isDirectory(fname) {
+  return new Promise((resolve, reject) => {
+    fs.stat(fname, function(err, stats) {
+      if(err) return reject(err);
+      resolve(stats.isDirectory());
+    });
+  })
+}
 
-Mime Types:
-You can add to the mimeTypes has to serve more file types.
+function findFile(fname) {
+  return new Promise((resolve, reject) => {
+    fs.exists(fname, function(exists) {
+      if(!exists) return reject(new Error('404 not found'));
+      resolve();
+    });
+  })
+  .then(() => {
+    return isDirectory(fname);
+  })
+  .then(ret => {
+    if(!ret) return fname;
+    var indexName = path.join(fname, 'index.html');
+    return new Promise((resolve, reject) => {
+      fs.exists(indexName, function(exists) {
+        if(!exists) return reject(new Error('404 Not Found'));
+        resolve(indexName);
+      });
+    });
+  })
+}
 
-Virtual Directories:
-Add to the virtualDirectories hash if you have resources that are not children of the root directory
+function fsRead(fname) {
+  return new Promise((resolve, reject) => {
+    fs.readFile(fname, "binary", function(err, buff) {
+      if(err) return reject(err);
+      resolve(buff);
+    });
+  })
+}
 
-*/
-var http = require("http"),
-    url = require("url"),
-    path = require("path"),
-    fs = require("fs")
-    port = process.argv[2] || 8888;
+async function __runrun(req, res) {
+  var uri = url.parse(req.url).pathname;
+  var root = uri.split("/")[1];
+  var virtualDirectory = virtualDirectories[root];
 
-var mimeTypes = {
-    "htm": "text/html",
-    "html": "text/html",
-    "jpeg": "image/jpeg",
-    "jpg": "image/jpeg",
-    "png": "image/png",
-    "gif": "image/gif",
-    "js": "text/javascript",
-    "css": "text/css"};
+  var fname;
 
-var virtualDirectories = {
-    //"images": "../images/"
-  };
-
-http.createServer(function(request, response) {
-
-  var uri = url.parse(request.url).pathname
-    , filename = path.join(process.cwd(), uri)
-    , root = uri.split("/")[1]
-    , virtualDirectory;
-  
-  virtualDirectory = virtualDirectories[root];
   if(virtualDirectory){
     uri = uri.slice(root.length + 1, uri.length);
-    filename = path.join(virtualDirectory ,uri);
+    fname = path.join(virtualDirectory ,uri);
+  } else {
+    fname = path.join(rootWWW, uri);
+  }
+  
+  try {
+    fname = await findFile(fname);
+  } catch(err) {
+    res.writeHead(404, {"Content-Type": "text/plain"});
+    res.write(err.message+"\n");
+    res.end();
+    console.error(err);
+    return;
   }
 
-  fs.exists(filename, function(exists) {
-    if(!exists) {
-      response.writeHead(404, {"Content-Type": "text/plain"});
-      response.write("404 Not Found\n");
-      response.end();
-      console.error('404: ' + filename);
-      return;
-    }
+  var extname = path.extname(fname).split(".")[1];
+  var mimeType = mimeTypes[extname];
+  var buff;
 
-	if (fs.statSync(filename).isDirectory()) filename += '/index.html';
+  try {
+    buff = await fsRead(fname);
+  } catch(err) {
+    res.writeHead(500, {"Content-Type": "text/plain"});
+    var msg = err.toString().replace(rootWWW, '')+'\n';
+    res.write(msg);
+    res.end();
+    console.error(`500: ${req.url}`);
+    return;
+  }
 
-    fs.readFile(filename, "binary", function(err, file) {
-      if(err) {        
-        response.writeHead(500, {"Content-Type": "text/plain"});
-        response.write(err + "\n");
-        response.end();
-        console.error('500: ' + filename);
-        return;
-      }
+  if(mimeType) {
+    res.writeHead(200, {"Content-Type": mimeType});
+  }
+  res.write(buff, "binary");
+  res.end();
+  console.log(`200: ${fname} ext ${extname} as ${mimeType}`);
+}
 
-      var mimeType = mimeTypes[path.extname(filename).split(".")[1]];
-      response.writeHead(200, {"Content-Type": mimeType});
-      response.write(file, "binary");
-      response.end();
-      console.log('200: ' + filename + ' as ' + mimeType);
-    });
+function _run(req, res) {
+  __runrun(req, res)
+  .catch(err => {
+    res.writeHead(500, {"Content-Type": "text/plain"});
+    res.write('Server Error');
+    res.end();
+    console.error(err);
+    return;
   });
-}).listen(parseInt(port, 10));
+}
+
+http.createServer(_run).listen(parseInt(port, 10));
 
 console.log("Static file server running at\n  => http://localhost:" + port + "/\nCTRL + C to shutdown");
